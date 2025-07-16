@@ -45,6 +45,9 @@ class FFT fft(BUFFER_SIZE*N_ROLLING_HISTORY, N_MEL_BIN, MIN_FREQUENCY, MAX_FREQU
 static float mel_data[N_MEL_BIN];
 int16_t l[BUFFER_SIZE];
 unsigned int read_num;
+float minVolumeThreshold[] = {0.0001, 0.001, 0.01, 0.05, 0.1, 0.15, 0.25, 0.35, 0.5};
+float ignoreVolumeThreshold[] = {0.02, 0.05, 0.1, 0.17, 0.25, 0.35, 0.45, 0.55, 0.7};
+uint8_t currentVolThreshold = 0;
 
 
 // MIC SETUP
@@ -83,11 +86,18 @@ CRGB leds_strip[NUM_LEDS_STRIP];
 uint8_t currentWheelLedNum = 0;
 uint8_t currentRainbowColor = 0;
 uint8_t currentRainbowColor_strip = 0;
-uint8_t currentBrightnessLevel = 0;
-uint8_t brightnessLevels[] = {50, 5, 15, 40, 70, 100};
-uint8_t currentProgramSelection = 0;
+uint8_t currentBrightnessLevel_strip = 0;
+uint8_t currentBrightnessLevel_wheels = 0;
+uint8_t brightnessLevels[] = {2, 5, 15, 30, 60, 100};
+uint8_t currentProgramSelectionWheels = 0;
+uint8_t currentProgramSelectionStrip = 0;
 uint8_t pulseSize = 3; // Set this to how big the "pulses" of scrolling LEDs will be - NUM_LEDS_STRIP has to be divisible by this number!
 uint16_t stripHalfIterationTracker = NUM_LEDS_STRIP_HALF - pulseSize; // Tracking which is the leading pixel in between function calls
+
+// arrays of functions for visualizers/programs to run
+typedef void (* ProgramFunc)();
+ProgramFunc StripProgs[4] = {&RainbowPulseScroll_strip, &RainbowScrollFromCenter_strip, &RainbowScroll_strip, &RainbowScroll_strip_AUDIO_REACTIVE};
+ProgramFunc WheelProgs[3] = {&SinglePixelRainbow_wheels, &RainbowScroll_wheels, &RainbowCycle_wheels};
 
 
 
@@ -98,12 +108,14 @@ void setup() {
   // digitalWrite(BOARD_LED, HIGH); // Built in esp32 board LED, turn on so I know it's "working"
 
   pinMode(BRIGHTNESS_STRIP_PIN, INPUT_PULLUP); // Button pin for the brightness control
+  pinMode(BRIGHTNESS_WHEELS_PIN, INPUT_PULLUP);
   pinMode(CYCLE_PROGRAM_PIN, INPUT_PULLUP); // Button pin for cycling the LED programs
+  pinMode(CYCLE_AUDIO_SENSITIVITY_PIN , INPUT_PULLUP);
   
   FastLED.addLeds<NEOPIXEL, DATA_PIN>(leds, NUM_LEDS);  // GRB ordering is assumed
   FastLED.addLeds<NEOPIXEL, DATA_PIN_STRIP>(leds_strip, NUM_LEDS_STRIP);
 
-  FastLED.setBrightness(brightnessLevels[currentBrightnessLevel]); // Brightness goes from 0-255
+  FastLED.setBrightness(255); // Brightness goes from 0-255 - setting it to max here because we're going to control it pixel-by-pixel (really just the 2 separate "strips") in the visualizer functions
   FastLED.setMaxPowerInMilliWatts(2500); // 2500 mW = 2.5 W (500mA at 5v, or 757.57 at 3.3v (when testing on board));
 
   currentPalette = RainbowColors_p; // Rainbow palette for visuals
@@ -123,67 +135,77 @@ void setup() {
 void loop() {
   // digitalWrite(BOARD_LED, LOW);
 
-  // Check if the button for brightness control is pressed
+  // Check if the button for brightness control for the strip is pressed
   if (digitalRead(BRIGHTNESS_STRIP_PIN) == LOW) {
-    currentBrightnessLevel += 1;
-    if (currentBrightnessLevel > 5) {
-      currentBrightnessLevel = 0;
+    currentBrightnessLevel_strip += 1;
+    if (currentBrightnessLevel_strip > 5) {
+      currentBrightnessLevel_strip = 0;
     }
-    FastLED.setBrightness(brightnessLevels[currentBrightnessLevel]); // Brightness goes from 0-255
+  //  FastLED.setBrightness(brightnessLevels[currentBrightnessLevel_strip]); // Brightness goes from 0-255
     delay(500);
+  }
+
+  // Check if the button for brightness control for the wheels is pressed
+  if (digitalRead(BRIGHTNESS_WHEELS_PIN) == LOW) {
+    currentBrightnessLevel_wheels += 1;
+    if (currentBrightnessLevel_wheels > 5) {
+      currentBrightnessLevel_wheels = 0;
+    }
+   // FastLED.setBrightness(brightnessLevels[currentBrightnessLevel_wheels]); // Brightness goes from 0-255
+    delay(500);
+  }
+
+  // Check if the button to decrease audio sensitivity is pressed (will prob want to turn it down the closer to speakers we are, like turning it down a lot in the pit otherwise it will just be constant LEDs with how loud it is)
+  if (digitalRead(CYCLE_AUDIO_SENSITIVITY_PIN) == LOW) {
+    currentVolThreshold++;
+    if (currentVolThreshold > 8) {
+      currentVolThreshold = 0;
+    }
+    fft._min_volume_threshold = minVolumeThreshold[currentVolThreshold];
   }
 
   // Check if the button for cycling programs is pressed
   if (digitalRead(CYCLE_PROGRAM_PIN) == LOW) {
-    currentProgramSelection++;
-    if (currentProgramSelection >= 3) { // Change this value as the # of programs increases
-      currentProgramSelection = 0;
-    }
     delay(500);
+    if (digitalRead(CYCLE_PROGRAM_PIN) == LOW) { // Wait .5 seconds, if still pressed in (long press) then cycle the strip visualizer, else short press cycle the wheels
+      currentProgramSelectionStrip++;
+      if (currentProgramSelectionStrip >= 3) { // Change this value as the # of visualizers for the strip increases - make a global variable?
+        currentProgramSelectionStrip = 0;
+      }
+    }
+    else {
+      currentProgramSelectionWheels++;
+      if (currentProgramSelectionWheels >= 2) { // Change this value as the # of programs increases
+        currentProgramSelectionWheels = 0;
+      }
+    }
+    
+    delay(1000); // Wait 1.0 seconds to make sure we don't think the button is pressed down again (give the user time to take finger off button after the change)
   }
 
-  // if (currentProgramSelection == 0) {
-  //   RainbowScroll_wheels();
-  // }
-  // else if (currentProgramSelection == 1) {
-  //   RainbowCycle();
-  // }
-  // else if (currentProgramSelection == 2) {
-  //   SinglePixelRainbow();
-  // }
+  if (currentProgramSelectionStrip > 2 || currentProgramSelectionWheels > 2) {
+    // Set up previous reads
+    for (int i = 0; i < N_ROLLING_HISTORY - 1; i++)
+      memcpy(y_data + i * BUFFER_SIZE, y_data + (i + 1)*BUFFER_SIZE, sizeof(float)*BUFFER_SIZE);
 
-  // EVERY_N_MILLISECONDS(10) {
-    // RainbowCycle_wheels();
-    // RainbowScroll_wheels();
-    // SinglePixelRainbow_wheels();
-  // }
+    // Read in audio from mic
+    i2s_read(I2S_NUM_0, l, BUFFER_SIZE * 2, &read_num, portMAX_DELAY);
 
-  // RainbowScroll_strip();
-  // EVERY_N_MILLISECONDS(100) {
-  //   // RainbowScroll_strip();
-  //   // RainbowScrollFromCenter_strip();
-  //   RainbowPulseScroll_strip();
-  // }
+    // Process latest read buffer into the previous reads
+    for (int i = 0; i < BUFFER_SIZE; i++) {
+      y_data[BUFFER_SIZE * (N_ROLLING_HISTORY - 1) + i] = l[i] / 32768.0;
+    }
+
+    // Process the audio
+    fft.t2mel( y_data, mel_data );
+  }
 
 
+  EVERY_N_MILLISECONDS(50) { WheelProgs[currentProgramSelectionWheels](); };
 
+  EVERY_N_MILLISECONDS(50) { StripProgs[currentProgramSelectionStrip](); };
 
-  // // Set up previous reads
-  // for (int i = 0; i < N_ROLLING_HISTORY - 1; i++)
-  //   memcpy(y_data + i * BUFFER_SIZE, y_data + (i + 1)*BUFFER_SIZE, sizeof(float)*BUFFER_SIZE);
-
-  // // Read in audio from mic
-  // i2s_read(I2S_NUM_0, l, BUFFER_SIZE * 2, &read_num, portMAX_DELAY);
-
-  // // Process latest read buffer into the previous reads
-  // for (int i = 0; i < BUFFER_SIZE; i++) {
-  //   y_data[BUFFER_SIZE * (N_ROLLING_HISTORY - 1) + i] = l[i] / 32768.0;
-  // }
-
-  // // Process the audio
-  // fft.t2mel( y_data, mel_data );
-
-
+  FastLED.show();
 
 
   // Debugging via printing the data to serial to see how it looks
@@ -197,34 +219,34 @@ void loop() {
   // // Pixel test using the processed audio
   // RainbowScroll_strip_AUDIO_TEST(mel_data);
 
-  RainbowScroll_strip();
-  RainbowScroll_wheels();
+  // RainbowScroll_strip();
+  // RainbowScroll_wheels();
 
 
   // digitalWrite(BOARD_LED, HIGH); // Built in esp32 board LED, turn on so I know it's "working"
-  FastLED.show();
-  FastLED.delay(50);
+  // FastLED.show();
+  // FastLED.delay(50);
   
 }
 
 
-void RainbowScroll_strip_AUDIO_TEST(float * mel_data) {
+void RainbowScroll_strip_AUDIO_REACTIVE() {
   currentRainbowColor_strip = 200;
   mel_data[0] *= 1.4;
   mel_data[1] *= 1.4;
   uint8_t pc = 29;
   for(int i = 0; i < 8; i++) {
     Serial.printf("%f\n", mel_data[i]);
-    if (mel_data[i] > 0.1) {
+    if (mel_data[i] > ignoreVolumeThreshold[currentVolThreshold]) {
       // if (mel_data[i] > 1.0) {
         // mel_data[i] = 1.0;
       // }
       // uint8_t convertedData = abs(mel_data[i]*200.0);
       // Serial.printf("%c\n", convertedData);
-      leds_strip[pc] = ColorFromPalette(currentPalette, currentRainbowColor_strip, mel_data[i]*255, currentBlending);
-      leds_strip[pc-1] = ColorFromPalette(currentPalette, currentRainbowColor_strip, mel_data[i]*255, currentBlending);
-      leds_strip[NUM_LEDS_STRIP-pc-1] = ColorFromPalette(currentPalette, currentRainbowColor_strip, mel_data[i]*255, currentBlending);
-      leds_strip[NUM_LEDS_STRIP-pc] = ColorFromPalette(currentPalette, currentRainbowColor_strip, mel_data[i]*255, currentBlending);
+      leds_strip[pc] = ColorFromPalette(currentPalette, currentRainbowColor_strip, mel_data[i]*brightnessLevels[currentBrightnessLevel_strip], currentBlending);
+      leds_strip[pc-1] = ColorFromPalette(currentPalette, currentRainbowColor_strip, mel_data[i]*brightnessLevels[currentBrightnessLevel_strip], currentBlending);
+      leds_strip[NUM_LEDS_STRIP-pc-1] = ColorFromPalette(currentPalette, currentRainbowColor_strip, mel_data[i]*brightnessLevels[currentBrightnessLevel_strip], currentBlending);
+      leds_strip[NUM_LEDS_STRIP-pc] = ColorFromPalette(currentPalette, currentRainbowColor_strip, mel_data[i]*brightnessLevels[currentBrightnessLevel_strip], currentBlending);
       // leds_strip[i].setHSV(currentRainbowColor_strip, 255, 20);
       currentRainbowColor_strip += 28;
     }
@@ -245,7 +267,7 @@ void RainbowPulseScroll_strip() {
   // for(int i = stripHalfIterationTracker; i >= stripHalfIterationTracker - pulseSize; i -+ pulseSize) {
   for (int i = 0; i < pulseSize; i++) {
     if (stripHalfIterationTracker + i >= 0 && stripHalfIterationTracker + i < NUM_LEDS_STRIP_HALF) {
-      leds_strip[stripHalfIterationTracker + i] = ColorFromPalette(currentPalette, currentRainbowColor_strip, 255, currentBlending);
+      leds_strip[stripHalfIterationTracker + i] = ColorFromPalette(currentPalette, currentRainbowColor_strip, brightnessLevels[currentBrightnessLevel_strip], currentBlending);
       // leds_strip[NUM_LEDS_STRIP - NUM_LEDS_STRIP_HALF + stripHalfIterationTracker - j] = ColorFromPalette(currentPalette, currentRainbowColor_strip, 255, currentBlending);
     }
   }
@@ -268,7 +290,7 @@ void RainbowPulseScroll_strip() {
 
 void RainbowScroll_strip() {
   for(int i = 0; i < NUM_LEDS_STRIP; i++) {
-    leds_strip[NUM_LEDS_STRIP - i - 1] = ColorFromPalette(currentPalette, currentRainbowColor_strip, 255, currentBlending);
+    leds_strip[NUM_LEDS_STRIP - i - 1] = ColorFromPalette(currentPalette, currentRainbowColor_strip, brightnessLevels[currentBrightnessLevel_strip], currentBlending);
     // leds_strip[i].setHSV(currentRainbowColor_strip, 255, 20);
     currentRainbowColor_strip++;
   }
@@ -278,8 +300,8 @@ void RainbowScroll_strip() {
 
 void RainbowScrollFromCenter_strip() {
   for(int i = 0; i < NUM_LEDS_STRIP_HALF; i++) {
-    leds_strip[NUM_LEDS_STRIP_HALF - i] = ColorFromPalette(currentPalette, currentRainbowColor_strip, 255, currentBlending);
-    leds_strip[i + NUM_LEDS_STRIP_HALF] = ColorFromPalette(currentPalette, currentRainbowColor_strip, 255, currentBlending);
+    leds_strip[NUM_LEDS_STRIP_HALF - i] = ColorFromPalette(currentPalette, currentRainbowColor_strip, brightnessLevels[currentBrightnessLevel_strip], currentBlending);
+    leds_strip[i + NUM_LEDS_STRIP_HALF] = ColorFromPalette(currentPalette, currentRainbowColor_strip, brightnessLevels[currentBrightnessLevel_strip], currentBlending);
     // leds_strip[i].setHSV(currentRainbowColor_strip, 255, 20);
     currentRainbowColor_strip++;
   }
@@ -291,7 +313,7 @@ void RainbowScrollFromCenter_strip() {
 // All LEDs same color and change together, cycling through colors of the rainbow
 void RainbowCycle_wheels() {
   for(int i = 0; i < NUM_LEDS; i++) {
-    leds[i] = ColorFromPalette(currentPalette, currentRainbowColor, 255, currentBlending);
+    leds[i] = ColorFromPalette(currentPalette, currentRainbowColor, brightnessLevels[currentBrightnessLevel_wheels], currentBlending);
     // leds[i+16] = ColorFromPalette(currentPalette, currentRainbowColor, 255, currentBlending);
     // leds[i+32] = ColorFromPalette(currentPalette, currentRainbowColor, 255, currentBlending);
     // leds[i+48] = ColorFromPalette(currentPalette, currentRainbowColor, 255, currentBlending);
@@ -307,11 +329,22 @@ void SinglePixelRainbow_wheels() {
   if (currentWheelLedNum > 15) {
     currentWheelLedNum = 0;
   }
-  FastLED.clear();
-  leds[currentWheelLedNum] = ColorFromPalette(currentPalette, currentRainbowColor, 255, currentBlending);
-  leds[currentWheelLedNum+16] = ColorFromPalette(currentPalette, currentRainbowColor, 255, currentBlending);
-  leds[currentWheelLedNum+32] = ColorFromPalette(currentPalette, currentRainbowColor, 255, currentBlending);
-  leds[currentWheelLedNum+48] = ColorFromPalette(currentPalette, currentRainbowColor, 255, currentBlending);
+  // FastLED.clear();
+  for (int i = 0; i < NUM_LEDS_PER_WHEEL; i++) {
+    if (i == currentWheelLedNum) {
+      leds[i] = ColorFromPalette(currentPalette, currentRainbowColor, brightnessLevels[currentBrightnessLevel_wheels], currentBlending);
+      leds[i+16] = ColorFromPalette(currentPalette, currentRainbowColor, brightnessLevels[currentBrightnessLevel_wheels], currentBlending);
+      leds[i+32] = ColorFromPalette(currentPalette, currentRainbowColor, brightnessLevels[currentBrightnessLevel_wheels], currentBlending);
+      leds[i+48] = ColorFromPalette(currentPalette, currentRainbowColor, brightnessLevels[currentBrightnessLevel_wheels], currentBlending);
+    }
+    else {
+        leds[i].setHSV(0, 0, 0);
+        leds[i+16].setHSV(0, 0, 0);
+        leds[i+32].setHSV(0, 0, 0);
+        leds[i+48].setHSV(0, 0, 0);
+    }
+  }
+
   currentRainbowColor++;
   currentWheelLedNum++;
   // FastLED.show();
@@ -323,10 +356,10 @@ void SinglePixelRainbow_wheels() {
 // From NeverPlayLegit on github: https://github.com/NeverPlayLegit/Rainbow-Fader-FastLED/tree/master
 void RainbowScroll_wheels() {
   for(int i = 0; i < NUM_LEDS_PER_WHEEL; i++) {
-    leds[i] = ColorFromPalette(currentPalette, currentRainbowColor, 255, currentBlending);
-    leds[i+16] = ColorFromPalette(currentPalette, currentRainbowColor, 255, currentBlending);
-    leds[i+32] = ColorFromPalette(currentPalette, currentRainbowColor, 255, currentBlending);
-    leds[i+48] = ColorFromPalette(currentPalette, currentRainbowColor, 255, currentBlending);
+    leds[i] = ColorFromPalette(currentPalette, currentRainbowColor, brightnessLevels[currentBrightnessLevel_wheels], currentBlending);
+    leds[i+16] = ColorFromPalette(currentPalette, currentRainbowColor, brightnessLevels[currentBrightnessLevel_wheels], currentBlending);
+    leds[i+32] = ColorFromPalette(currentPalette, currentRainbowColor, brightnessLevels[currentBrightnessLevel_wheels], currentBlending);
+    leds[i+48] = ColorFromPalette(currentPalette, currentRainbowColor, brightnessLevels[currentBrightnessLevel_wheels], currentBlending);
     currentRainbowColor++;
   }
   currentRainbowColor = currentRainbowColor - NUM_LEDS_PER_WHEEL + 5;

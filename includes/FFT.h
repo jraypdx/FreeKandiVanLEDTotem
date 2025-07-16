@@ -15,7 +15,7 @@ class FFT{
     private:
         float* _hammer=NULL;
         uint16_t _num_mel_bands, _num_samples, _sample_rate;
-        float _min_frequency, _max_frequency, _min_volume_threshold;
+        float _min_frequency, _max_frequency;
         float * _y_data_cal;
         float** _melmat=NULL;
         float hz2mel(float f);
@@ -27,6 +27,7 @@ class FFT{
     public:
         FFT(uint16_t samples, uint16_t n_mel_bin, float min_frequency, float max_frequency, uint16_t sample_rate, float min_volume_threshold);
         ~FFT();
+        float _min_volume_threshold; // leaving the _ so I don't have to change it everywhere it might be used and mess something up
         void fft(float * real, float * imag);
         void fft(float * real);
         void abs(float * real, float * imag);
